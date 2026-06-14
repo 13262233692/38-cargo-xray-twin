@@ -17,9 +17,37 @@ const App: React.FC = () => {
   const [transferFunction, setTransferFunction] = useState<TransferFunction>(DEFAULT_TRANSFER_FUNCTION);
   const [status, setStatus] = useState<string>('等待连接后端网关...');
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [performanceWarning, setPerformanceWarning] = useState<string | null>(null);
+  const [webglError, setWebglError] = useState<string | null>(null);
+
+  const handlePerformanceWarning = useCallback((message: string) => {
+    console.warn('[Performance]', message);
+    setPerformanceWarning(message);
+    
+    setSettings(prev => {
+      const newSampleRate = Math.max(64, Math.floor(prev.sampleRate * 0.7));
+      if (newSampleRate === prev.sampleRate) return prev;
+      
+      console.log(`[Performance] 自动降低采样率: ${prev.sampleRate} -> ${newSampleRate}`);
+      return {
+        ...prev,
+        sampleRate: newSampleRate
+      };
+    });
+    
+    setTimeout(() => setPerformanceWarning(null), 5000);
+  }, []);
+
+  const handleWebGLError = useCallback((error: string) => {
+    console.error('[WebGL]', error);
+    setWebglError(error);
+  }, []);
 
   const loadDemoData = useCallback(() => {
     setStatus('生成演示体数据...');
+    setPerformanceWarning(null);
+    setWebglError(null);
+    
     const width = 128;
     const height = 128;
     const depth = 128;
@@ -64,6 +92,8 @@ const App: React.FC = () => {
         volumeData={volumeData}
         settings={settings}
         transferFunction={transferFunction}
+        onPerformanceWarning={handlePerformanceWarning}
+        onWebGLError={handleWebGLError}
       />
       
       <ControlPanel
@@ -75,6 +105,60 @@ const App: React.FC = () => {
         isConnected={isConnected}
         onLoadDemo={loadDemoData}
       />
+
+      {performanceWarning && (
+        <div style={{
+          position: 'absolute',
+          top: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(255, 150, 50, 0.95)',
+          color: '#fff',
+          padding: '12px 24px',
+          borderRadius: '6px',
+          fontSize: '14px',
+          fontWeight: 600,
+          zIndex: 200,
+          boxShadow: '0 4px 12px rgba(255, 150, 50, 0.4)',
+          animation: 'slideDown 0.3s ease-out'
+        }}>
+          ⚠️ {performanceWarning}
+        </div>
+      )}
+
+      {webglError && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(200, 50, 50, 0.95)',
+          color: '#fff',
+          padding: '24px 32px',
+          borderRadius: '8px',
+          fontSize: '14px',
+          zIndex: 1000,
+          textAlign: 'center',
+          maxWidth: '400px'
+        }}>
+          <h3 style={{ marginBottom: '12px' }}>🚨 GPU 过载保护</h3>
+          <p style={{ marginBottom: '16px', lineHeight: 1.5 }}>{webglError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '10px 24px',
+              background: '#fff',
+              color: '#c83232',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: 600
+            }}
+          >
+            刷新页面
+          </button>
+        </div>
+      )}
 
       <div style={{
         position: 'absolute',
@@ -133,6 +217,19 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <style>{`
+        @keyframes slideDown {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
+        }
+      `}</style>
     </div>
   );
 };

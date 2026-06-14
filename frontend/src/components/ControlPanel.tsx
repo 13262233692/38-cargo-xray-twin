@@ -309,6 +309,92 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
           textTransform: 'uppercase',
           letterSpacing: '0.5px'
         }}>
+          性能保护
+        </h3>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <input
+            type="checkbox"
+            checked={settings.adaptiveStepEnabled}
+            onChange={(e) => updateSetting('adaptiveStepEnabled', e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+          <label style={{ color: '#ccccdd', fontSize: '12px', cursor: 'pointer' }}>
+            自适应步长控制
+          </label>
+        </div>
+
+        <div style={{ marginBottom: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+            <label style={{ color: '#ccccdd', fontSize: '12px' }}>最大步长系数</label>
+            <span style={{ color: '#66ff99', fontSize: '12px', fontFamily: 'monospace' }}>
+              {settings.maxStepFactor.toFixed(1)}x
+            </span>
+          </div>
+          <input
+            type="range"
+            min="1.5"
+            max="6.0"
+            step="0.1"
+            value={settings.maxStepFactor}
+            onChange={(e) => updateSetting('maxStepFactor', parseFloat(e.target.value))}
+            disabled={!settings.adaptiveStepEnabled}
+            style={{ ...sliderStyle, opacity: settings.adaptiveStepEnabled ? 1 : 0.3 }}
+          />
+          <p style={{ color: '#667788', fontSize: '10px', marginTop: '4px' }}>
+            空体素区域可加速的最大倍数
+          </p>
+        </div>
+
+        <div style={{ marginBottom: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+            <label style={{ color: '#ccccdd', fontSize: '12px' }}>最小步长系数</label>
+            <span style={{ color: '#ffaa66', fontSize: '12px', fontFamily: 'monospace' }}>
+              {settings.minStepFactor.toFixed(2)}x
+            </span>
+          </div>
+          <input
+            type="range"
+            min="0.2"
+            max="1.0"
+            step="0.05"
+            value={settings.minStepFactor}
+            onChange={(e) => updateSetting('minStepFactor', parseFloat(e.target.value))}
+            disabled={!settings.adaptiveStepEnabled}
+            style={{ ...sliderStyle, opacity: settings.adaptiveStepEnabled ? 1 : 0.3 }}
+          />
+          <p style={{ color: '#667788', fontSize: '10px', marginTop: '4px' }}>
+            高密度区域最小步长（细节保留）
+          </p>
+        </div>
+
+        <div style={{
+          padding: '10px',
+          background: 'rgba(50, 100, 200, 0.1)',
+          borderRadius: '6px',
+          border: '1px solid rgba(50, 100, 200, 0.2)'
+        }}>
+          <p style={{ color: '#66aaff', fontSize: '11px', lineHeight: 1.5 }}>
+            <strong>🛡️ 安全机制已启用:</strong><br/>
+            • 384 步硬限制防 TDR<br/>
+            • 95% 不透明度提前终止<br/>
+            • 距离归一化步长调整<br/>
+            • 空体素跳跃加速
+          </p>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <h3 style={{
+          color: '#aaaacc',
+          fontSize: '13px',
+          fontWeight: 600,
+          marginBottom: '12px',
+          paddingBottom: '8px',
+          borderBottom: '1px solid #333355',
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px'
+        }}>
           密度传递函数
         </h3>
 

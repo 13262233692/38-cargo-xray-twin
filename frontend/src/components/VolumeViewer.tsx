@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { VolumeData, VolumeRenderingSettings, TransferFunction } from '../types/volume';
 import { buildTransferFunctionTextureData } from '../utils/volumeUtils';
@@ -11,13 +11,17 @@ interface VolumeViewerProps {
   settings: VolumeRenderingSettings;
   transferFunction: TransferFunction;
   className?: string;
+  onPerformanceWarning?: (message: string) => void;
+  onWebGLError?: (error: string) => void;
 }
 
 const VolumeViewer: React.FC<VolumeViewerProps> = ({
   volumeData,
   settings,
   transferFunction,
-  className
+  className,
+  onPerformanceWarning,
+  onWebGLError
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -34,6 +38,43 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
   const zeffTextureRef = useRef<THREE.Texture | null>(null);
   const tfDensityTextureRef = useRef<THREE.DataTexture | null>(null);
   const tfZeffTextureRef = useRef<THREE.DataTexture | null>(null);
+
+  const frameTimeRef = useRef<number[]>([]);
+  const lastQualityReductionRef = useRef<number>(0);
+  const webglContextLostRef = useRef(false);
+
+  const [isContextLost, setIsContextLost] = useState(false);
+
+  const getCameraDistance = useCallback(() => {
+    if (!cameraRef.current) return 3.0;
+    return cameraRef.current.position.length();
+  }, []);
+
+  const reduceRenderQuality = useCallback((reason: string) => {
+    const now = Date.now();
+    if (now - lastQualityReductionRef.current < 1000) return;
+    lastQualityReductionRef.current = now;
+
+    if (onPerformanceWarning) {
+      onPerformanceWarning(reason);
+    }
+  }, [onPerformanceWarning]);
+
+  const monitorPerformance = useCallback(() => {
+    const now = performance.now();
+    frameTimeRef.current.push(now);
+    
+    if (frameTimeRef.current.length > 30) {
+      frameTimeRef.current.shift();
+      
+      const avgFrameTime = (now - frameTimeRef.current[0]) / frameTimeRef.current.length;
+      const fps = 1000 / avgFrameTime;
+      
+      if (fps < 15 && !isDraggingRef.current) {
+        reduceRenderQuality(`帧率过低 (${fps.toFixed(1)} FPS)，已启用性能保护模式`);
+      }
+    }
+  }, [reduceRenderQuality]);
 
   const initScene = useCallback(() => {
     if (!containerRef.current) return;
@@ -54,12 +95,29 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
-      powerPreference: 'high-performance'
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: false
     });
     renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
+
+    renderer.domElement.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      webglContextLostRef.current = true;
+      setIsContextLost(true);
+      if (onWebGLError) {
+        onWebGLError('WebGL 上下文丢失，这通常是由于 GPU 负载过高导致。请刷新页面重试。');
+      }
+      console.error('[VolumeViewer] WebGL context lost');
+    });
+
+    renderer.domElement.addEventListener('webglcontextrestored', () => {
+      webglContextLostRef.current = false;
+      setIsContextLost(false);
+      console.log('[VolumeViewer] WebGL context restored');
+    });
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
     scene.add(ambientLight);
@@ -69,12 +127,29 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     scene.add(gridHelper);
 
     const animate = () => {
+      if (webglContextLostRef.current) {
+        animationIdRef.current = requestAnimationFrame(animate);
+        return;
+      }
+      
       animationIdRef.current = requestAnimationFrame(animate);
       updateCamera();
-      renderer.render(scene, camera);
+      
+      if (materialRef.current && cameraRef.current) {
+        materialRef.current.uniforms.uCameraDistance.value = getCameraDistance();
+      }
+      
+      if (rendererRef.current && sceneRef.current && cameraRef.current) {
+        try {
+          renderer.render(scene, camera);
+          monitorPerformance();
+        } catch (e) {
+          console.error('[VolumeViewer] Render error:', e);
+        }
+      }
     };
     animate();
-  }, []);
+  }, [getCameraDistance, monitorPerformance, onWebGLError]);
 
   const updateCamera = useCallback(() => {
     if (!cameraRef.current) return;
@@ -155,6 +230,10 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     tfDensityTextureRef.current = createTransferTexture(tfData.densityData);
     tfZeffTextureRef.current = createTransferTexture(tfData.zeffData);
 
+    const adaptiveStepEnabled = settings.adaptiveStepEnabled ?? true;
+    const maxStepFactor = settings.maxStepFactor ?? 3.0;
+    const minStepFactor = settings.minStepFactor ?? 0.5;
+
     const material = new THREE.ShaderMaterial({
       vertexShader: vertShader,
       fragmentShader: fragShader,
@@ -180,7 +259,11 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
         uHighlightHeavyMetals: { value: settings.highlightHeavyMetals ? 1.0 : 0.0 },
         uHighlightContraband: { value: settings.highlightContraband ? 1.0 : 0.0 },
         uCameraPos: { value: new THREE.Vector3() },
-        uInverseModelMatrix: { value: new THREE.Matrix4() }
+        uInverseModelMatrix: { value: new THREE.Matrix4() },
+        uCameraDistance: { value: getCameraDistance() },
+        uAdaptiveStepEnabled: { value: adaptiveStepEnabled ? 1.0 : 0.0 },
+        uMaxStepFactor: { value: maxStepFactor },
+        uMinStepFactor: { value: minStepFactor }
       },
       transparent: true,
       side: THREE.BackSide,
@@ -198,7 +281,7 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.3 });
     const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
     mesh.add(edgeLines);
-  }, [volumeData, settings, transferFunction, createVolumeTexture, createTransferTexture]);
+  }, [volumeData, settings, transferFunction, createVolumeTexture, createTransferTexture, getCameraDistance]);
 
   useEffect(() => {
     if (!materialRef.current) return;
@@ -219,6 +302,9 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     );
     material.uniforms.uHighlightHeavyMetals.value = settings.highlightHeavyMetals ? 1.0 : 0.0;
     material.uniforms.uHighlightContraband.value = settings.highlightContraband ? 1.0 : 0.0;
+    material.uniforms.uAdaptiveStepEnabled.value = (settings.adaptiveStepEnabled ?? true) ? 1.0 : 0.0;
+    material.uniforms.uMaxStepFactor.value = settings.maxStepFactor ?? 3.0;
+    material.uniforms.uMinStepFactor.value = settings.minStepFactor ?? 0.5;
   }, [settings]);
 
   useEffect(() => {
@@ -237,7 +323,7 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
   }, [transferFunction]);
 
   useEffect(() => {
-    if (volumeData && sceneRef.current) {
+    if (volumeData && sceneRef.current && !webglContextLostRef.current) {
       createVolumeMesh();
     }
   }, [volumeData, createVolumeMesh]);
@@ -284,6 +370,7 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     const handleMouseDown = (e: MouseEvent) => {
       isDraggingRef.current = true;
       previousMouseRef.current = { x: e.clientX, y: e.clientY };
+      frameTimeRef.current = [];
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -301,13 +388,20 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
 
     const handleMouseUp = () => {
       isDraggingRef.current = false;
+      frameTimeRef.current = [];
     };
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       const zoomSpeed = 0.001;
+      const oldZoom = zoomRef.current;
       zoomRef.current += e.deltaY * zoomSpeed;
       zoomRef.current = Math.max(1.2, Math.min(10, zoomRef.current));
+      
+      const zoomChange = Math.abs(zoomRef.current - oldZoom) / oldZoom;
+      if (zoomChange > 0.1) {
+        frameTimeRef.current = [];
+      }
     };
 
     container.addEventListener('mousedown', handleMouseDown);
@@ -346,7 +440,40 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
       ref={containerRef}
       className={className}
       style={{ width: '100%', height: '100%', position: 'relative', cursor: 'grab' }}
-    />
+    >
+      {isContextLost && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(20, 20, 40, 0.95)',
+          padding: '24px 32px',
+          borderRadius: '8px',
+          textAlign: 'center',
+          border: '1px solid #ff4444',
+          zIndex: 1000
+        }}>
+          <h3 style={{ color: '#ff6666', marginBottom: '12px' }}>⚠️ GPU 过载保护</h3>
+          <p style={{ color: '#ccccdd', fontSize: '14px', marginBottom: '16px' }}>
+            WebGL 上下文因 GPU 负载过高而丢失
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '8px 16px',
+              background: '#ff6633',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            刷新页面
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 

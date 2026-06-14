@@ -30,6 +30,9 @@ export interface VolumeRenderingSettings {
   sliceEnabled: { x: boolean; y: boolean; z: boolean };
   highlightHeavyMetals: boolean;
   highlightContraband: boolean;
+  adaptiveStepEnabled: boolean;
+  maxStepFactor: number;
+  minStepFactor: number;
 }
 
 export const DEFAULT_TRANSFER_FUNCTION: TransferFunction = {
@@ -56,5 +59,8 @@ export const DEFAULT_RENDERING_SETTINGS: VolumeRenderingSettings = {
   slicePlane: { x: 0.5, y: 0.5, z: 0.5 },
   sliceEnabled: { x: false, y: false, z: false },
   highlightHeavyMetals: true,
-  highlightContraband: true
+  highlightContraband: true,
+  adaptiveStepEnabled: true,
+  maxStepFactor: 3.0,
+  minStepFactor: 0.5
 };
