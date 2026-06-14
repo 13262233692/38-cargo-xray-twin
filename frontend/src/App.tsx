@@ -1,15 +1,24 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import VolumeViewer from './components/VolumeViewer';
 import ControlPanel from './components/ControlPanel';
+import TomographySliceViewer from './components/TomographySliceViewer';
+import AnalysisResultPanel from './components/AnalysisResultPanel';
+import ContrabandAlertPanel from './components/ContrabandAlertPanel';
 import {
   VolumeData,
   VolumeRenderingSettings,
   TransferFunction,
   DEFAULT_RENDERING_SETTINGS,
-  DEFAULT_TRANSFER_FUNCTION
+  DEFAULT_TRANSFER_FUNCTION,
+  ROIBoundingBox,
+  TomographySliceData,
+  QuantitativeAnalysisResult,
+  ContrabandAlert,
+  SuspiciousRegion
 } from './types/volume';
 import { generateMockVolumeData } from './utils/volumeUtils';
 import { VolumeDataStreamService } from './services/websocketClient';
+import { tomographyService } from './services/tomographyService';
 
 const App: React.FC = () => {
   const [volumeData, setVolumeData] = useState<VolumeData | null>(null);
@@ -19,6 +28,18 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [performanceWarning, setPerformanceWarning] = useState<string | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
+  
+  const [tomographMode, setTomographMode] = useState(false);
+  const [roiSelection, setRoiSelection] = useState<ROIBoundingBox | null>(null);
+  const [slicePosition, setSlicePosition] = useState(0.5);
+  const [viewMode, setViewMode] = useState<'density' | 'zeff' | 'pseudocolor'>('pseudocolor');
+  const [sliceData, setSliceData] = useState<TomographySliceData | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<QuantitativeAnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisTime, setAnalysisTime] = useState<number | undefined>(undefined);
+  const [alerts, setAlerts] = useState<ContrabandAlert[]>([]);
+  const [highlightRegion, setHighlightRegion] = useState<SuspiciousRegion | null>(null);
+  const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
 
   const handlePerformanceWarning = useCallback((message: string) => {
     console.warn('[Performance]', message);
@@ -47,6 +68,10 @@ const App: React.FC = () => {
     setStatus('生成演示体数据...');
     setPerformanceWarning(null);
     setWebglError(null);
+    setSliceData(null);
+    setAnalysisResult(null);
+    setRoiSelection(null);
+    setAlerts([]);
     
     const width = 128;
     const height = 128;
@@ -67,6 +92,110 @@ const App: React.FC = () => {
     }, 100);
   }, []);
 
+  const handleTomographModeChange = useCallback((enabled: boolean) => {
+    setTomographMode(enabled);
+    if (!enabled) {
+      setRoiSelection(null);
+      setSliceData(null);
+      setShowAnalysisPanel(false);
+    }
+  }, []);
+
+  const handleROISelectionChange = useCallback((roi: ROIBoundingBox | null) => {
+    setRoiSelection(roi);
+  }, []);
+
+  const handleROISelectionComplete = useCallback((roi: ROIBoundingBox) => {
+    console.log('[Tomography] ROI selected:', roi);
+    setRoiSelection(roi);
+  }, []);
+
+  const handleAnalyzeROI = useCallback(async () => {
+    if (!volumeData || !roiSelection) return;
+
+    setIsAnalyzing(true);
+    setShowAnalysisPanel(true);
+    
+    try {
+      const startTime = performance.now();
+      
+      const slicePlane = {
+        origin: [0.5, 0.5, slicePosition] as [number, number, number],
+        normal: [0, 0, 1] as [number, number, number],
+        up: [0, 1, 0] as [number, number, number]
+      };
+
+      const [slice, analysis] = await Promise.all([
+        tomographyService.extractSlice(volumeData, slicePlane, 256),
+        tomographyService.analyzeRegion(volumeData, roiSelection)
+      ]);
+
+      setSliceData(slice);
+      setAnalysisResult(analysis);
+      setAnalysisTime(performance.now() - startTime);
+
+      const newAlerts = tomographyService.generateAlerts(analysis);
+      if (newAlerts.length > 0) {
+        setAlerts(prev => [...newAlerts, ...prev]);
+        
+        if (Notification.permission === 'granted') {
+          new Notification('🚨 走私警报', {
+            body: `检测到 ${newAlerts.length} 个可疑物品`,
+            icon: '⚠️'
+          });
+        }
+      }
+
+      console.log('[Tomography] Analysis complete:', analysis);
+    } catch (error) {
+      console.error('[Tomography] Analysis failed:', error);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [volumeData, roiSelection, slicePosition]);
+
+  const handleSlicePositionChange = useCallback(async (pos: number) => {
+    setSlicePosition(pos);
+    
+    if (volumeData && tomographMode) {
+      try {
+        const slicePlane = {
+          origin: [0.5, 0.5, pos] as [number, number, number],
+          normal: [0, 0, 1] as [number, number, number],
+          up: [0, 1, 0] as [number, number, number]
+        };
+        const slice = await tomographyService.extractSlice(volumeData, slicePlane, 256);
+        setSliceData(slice);
+      } catch (error) {
+        console.error('[Tomography] Slice extraction failed:', error);
+      }
+    }
+  }, [volumeData, tomographMode]);
+
+  const handleAcknowledgeAlert = useCallback((alertId: string) => {
+    setAlerts(prev => prev.map(a => 
+      a.id === alertId ? { ...a, acknowledged: true } : a
+    ));
+  }, []);
+
+  const handleViewAlert = useCallback((alert: ContrabandAlert) => {
+    const region: SuspiciousRegion = {
+      center: alert.location,
+      size: alert.size,
+      avgDensity: alert.avgDensity,
+      avgZeff: alert.avgZeff,
+      maxDensity: alert.avgDensity * 1.2,
+      maxZeff: alert.avgZeff * 1.2,
+      volumeVoxels: 0,
+      type: alert.type
+    };
+    setHighlightRegion(region);
+  }, []);
+
+  const handleViewRegion = useCallback((region: SuspiciousRegion) => {
+    setHighlightRegion(region);
+  }, []);
+
   useEffect(() => {
     const wsService = new VolumeDataStreamService();
     
@@ -83,6 +212,7 @@ const App: React.FC = () => {
 
     return () => {
       wsService.disconnect();
+      tomographyService.dispose();
     };
   }, []);
 
@@ -94,6 +224,12 @@ const App: React.FC = () => {
         transferFunction={transferFunction}
         onPerformanceWarning={handlePerformanceWarning}
         onWebGLError={handleWebGLError}
+        tomographMode={tomographMode}
+        roiSelection={roiSelection}
+        onROISelectionChange={handleROISelectionChange}
+        onROISelectionComplete={handleROISelectionComplete}
+        slicePlanePosition={slicePosition}
+        highlightRegion={highlightRegion}
       />
       
       <ControlPanel
@@ -104,7 +240,97 @@ const App: React.FC = () => {
         status={status}
         isConnected={isConnected}
         onLoadDemo={loadDemoData}
+        tomographMode={tomographMode}
+        onTomographModeChange={handleTomographModeChange}
+        slicePosition={slicePosition}
+        onSlicePositionChange={handleSlicePositionChange}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        onAnalyzeROI={handleAnalyzeROI}
+        isAnalyzing={isAnalyzing}
+        hasROI={!!roiSelection}
       />
+
+      {tomographMode && showAnalysisPanel && (
+        <div style={{
+          position: 'absolute',
+          left: '0',
+          top: '0',
+          width: '300px',
+          height: '100%',
+          background: 'rgba(15, 15, 25, 0.95)',
+          borderRight: '1px solid #333355',
+          padding: '16px',
+          overflowY: 'auto',
+          backdropFilter: 'blur(10px)',
+          zIndex: 90
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '16px'
+          }}>
+            <h3 style={{
+              color: '#ffaa33',
+              fontSize: '14px',
+              fontWeight: 600,
+              margin: 0
+            }}>
+              🔬 断层分析结果
+            </h3>
+            <button
+              onClick={() => setShowAnalysisPanel(false)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#667788',
+                cursor: 'pointer',
+                fontSize: '16px',
+                padding: '4px'
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{
+              fontSize: '11px',
+              color: '#88aacc',
+              marginBottom: '8px',
+              fontWeight: 600
+            }}>
+              断层切片预览
+            </div>
+            <TomographySliceViewer
+              sliceData={sliceData}
+              analysis={analysisResult}
+              isAnalyzing={isAnalyzing}
+              viewMode={viewMode}
+              slicePosition={slicePosition}
+              onSlicePositionChange={setSlicePosition}
+              analysisTime={analysisTime}
+            />
+          </div>
+
+          <div>
+            <div style={{
+              fontSize: '11px',
+              color: '#88aacc',
+              marginBottom: '8px',
+              fontWeight: 600
+            }}>
+              定量分析
+            </div>
+            <AnalysisResultPanel
+              analysis={analysisResult}
+              isAnalyzing={isAnalyzing}
+              onViewRegion={handleViewRegion}
+            />
+          </div>
+        </div>
+      )}
 
       {performanceWarning && (
         <div style={{
@@ -217,6 +443,12 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <ContrabandAlertPanel
+        alerts={alerts}
+        onAcknowledge={handleAcknowledgeAlert}
+        onViewAlert={handleViewAlert}
+      />
 
       <style>{`
         @keyframes slideDown {

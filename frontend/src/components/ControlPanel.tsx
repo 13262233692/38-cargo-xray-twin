@@ -9,6 +9,15 @@ interface ControlPanelProps {
   status: string;
   isConnected: boolean;
   onLoadDemo: () => void;
+  tomographMode?: boolean;
+  onTomographModeChange?: (enabled: boolean) => void;
+  slicePosition?: number;
+  onSlicePositionChange?: (pos: number) => void;
+  viewMode?: 'density' | 'zeff' | 'pseudocolor';
+  onViewModeChange?: (mode: 'density' | 'zeff' | 'pseudocolor') => void;
+  onAnalyzeROI?: () => void;
+  isAnalyzing?: boolean;
+  hasROI?: boolean;
 }
 
 const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -18,7 +27,16 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   onTransferFunctionChange,
   status,
   isConnected,
-  onLoadDemo
+  onLoadDemo,
+  tomographMode = false,
+  onTomographModeChange,
+  slicePosition = 0.5,
+  onSlicePositionChange,
+  viewMode = 'pseudocolor',
+  onViewModeChange,
+  onAnalyzeROI,
+  isAnalyzing = false,
+  hasROI = false
 }) => {
   const updateSetting = <K extends keyof VolumeRenderingSettings>(
     key: K,
@@ -382,6 +400,144 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
             • 空体素跳跃加速
           </p>
         </div>
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <h3 style={{
+          color: '#ffaa33',
+          fontSize: '13px',
+          fontWeight: 600,
+          marginBottom: '12px',
+          paddingBottom: '8px',
+          borderBottom: '1px solid #333355',
+          textTransform: 'uppercase',
+          letterSpacing: '0.5px'
+        }}>
+          🔬 断层扫描分析
+        </h3>
+
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '8px', 
+          marginBottom: '14px',
+          padding: '10px',
+          background: tomographMode ? 'rgba(255, 170, 50, 0.1)' : 'rgba(0, 0, 0, 0.2)',
+          borderRadius: '6px',
+          border: `1px solid ${tomographMode ? 'rgba(255, 170, 50, 0.4)' : 'rgba(50, 50, 80, 0.3)'}`
+        }}>
+          <input
+            type="checkbox"
+            checked={tomographMode}
+            onChange={(e) => onTomographModeChange && onTomographModeChange(e.target.checked)}
+            style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+            id="tomograph-toggle"
+          />
+          <label htmlFor="tomograph-toggle" style={{ 
+            color: tomographMode ? '#ffaa33' : '#ccccdd', 
+            fontSize: '12px', 
+            cursor: 'pointer',
+            fontWeight: tomographMode ? 600 : 400
+          }}>
+            启用断层扫描模式
+          </label>
+        </div>
+
+        {tomographMode && (
+          <>
+            <div style={{ marginBottom: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                <label style={{ color: '#ccccdd', fontSize: '12px' }}>切片位置</label>
+                <span style={{ color: '#66ddff', fontSize: '11px', fontFamily: 'monospace' }}>
+                  {(slicePosition * 100).toFixed(1)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={slicePosition}
+                onChange={(e) => onSlicePositionChange && onSlicePositionChange(parseFloat(e.target.value))}
+                style={sliderStyle}
+              />
+            </div>
+
+            <div style={{ marginBottom: '14px' }}>
+              <label style={{ color: '#ccccdd', fontSize: '12px', display: 'block', marginBottom: '8px' }}>
+                视图模式
+              </label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {(['density', 'zeff', 'pseudocolor'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => onViewModeChange && onViewModeChange(mode)}
+                    style={{
+                      flex: 1,
+                      padding: '6px 8px',
+                      background: viewMode === mode ? 'rgba(255, 170, 50, 0.3)' : 'rgba(30, 30, 50, 0.5)',
+                      border: `1px solid ${viewMode === mode ? '#ffaa33' : 'rgba(100, 100, 150, 0.3)'}`,
+                      borderRadius: '4px',
+                      color: viewMode === mode ? '#ffcc66' : '#8899aa',
+                      cursor: 'pointer',
+                      fontSize: '10px'
+                    }}
+                  >
+                    {mode === 'density' ? '密度' : mode === 'zeff' ? 'Z值' : '伪彩'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={onAnalyzeROI}
+              disabled={!hasROI || isAnalyzing}
+              style={{
+                width: '100%',
+                padding: '10px',
+                background: hasROI && !isAnalyzing 
+                  ? 'linear-gradient(135deg, #ff8800, #ff4400)' 
+                  : 'rgba(80, 80, 100, 0.3)',
+                border: 'none',
+                borderRadius: '6px',
+                color: hasROI && !isAnalyzing ? '#ffffff' : '#666677',
+                fontWeight: 600,
+                fontSize: '13px',
+                cursor: hasROI && !isAnalyzing ? 'pointer' : 'not-allowed',
+                boxShadow: hasROI && !isAnalyzing 
+                  ? '0 2px 8px rgba(255, 100, 0, 0.3)' 
+                  : 'none'
+              }}
+            >
+              {isAnalyzing ? '⏳ 分析中...' : hasROI ? '🔬 执行定量分析' : '请先选择 ROI 区域'}
+            </button>
+
+            {!hasROI && (
+              <p style={{ 
+                color: '#667788', 
+                fontSize: '10px', 
+                marginTop: '8px',
+                textAlign: 'center' 
+              }}>
+                在 3D 视图中拖动鼠标框选感兴趣区域
+              </p>
+            )}
+
+            <div style={{
+              marginTop: '12px',
+              padding: '8px 10px',
+              background: 'rgba(0, 150, 255, 0.08)',
+              borderRadius: '4px',
+              border: '1px solid rgba(0, 150, 255, 0.2)'
+            }}>
+              <p style={{ color: '#66bbee', fontSize: '10px', lineHeight: 1.5 }}>
+                <strong>💡 技术原理:</strong><br/>
+                三维 Radon 变换逆运算 + FBP 滤波反投影<br/>
+                3D-FFT 斜坡滤波器 + 定量层析诊断
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       <div style={{ marginBottom: '20px' }}>

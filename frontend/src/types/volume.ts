@@ -35,6 +35,68 @@ export interface VolumeRenderingSettings {
   minStepFactor: number;
 }
 
+export interface SlicePlane {
+  origin: [number, number, number];
+  normal: [number, number, number];
+  up: [number, number, number];
+}
+
+export interface ROIBoundingBox {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export interface SuspiciousRegion {
+  center: [number, number, number];
+  size: [number, number, number];
+  avgDensity: number;
+  avgZeff: number;
+  maxDensity: number;
+  maxZeff: number;
+  volumeVoxels: number;
+  type: 'heavy_metal' | 'contraband' | 'high_density' | 'suspicious';
+}
+
+export interface QuantitativeAnalysisResult {
+  totalVolumeVoxels: number;
+  totalPhysicalVolume: number;
+  avgDensity: number;
+  avgZEffective: number;
+  maxDensity: number;
+  maxZEffective: number;
+  densityHistogram: number[];
+  zeffHistogram: number[];
+  contrabandProbability: number;
+  heavyMetalContent: number;
+  organicContent: number;
+  suspiciousRegions: SuspiciousRegion[];
+  volumeCm3: number;
+  estimatedMassKg: number;
+}
+
+export interface TomographySliceData {
+  density: Float32Array;
+  zeff: Float32Array;
+  width: number;
+  height: number;
+}
+
+export interface ContrabandAlert {
+  id: string;
+  timestamp: number;
+  type: 'heavy_metal' | 'contraband' | 'suspicious';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  probability: number;
+  location: [number, number, number];
+  size: [number, number, number];
+  description: string;
+  volumeCm3: number;
+  estimatedMassKg: number;
+  avgZeff: number;
+  avgDensity: number;
+  acknowledged: boolean;
+}
+
 export const DEFAULT_TRANSFER_FUNCTION: TransferFunction = {
   densityPoints: [
     { value: 0, color: [0, 0, 0], opacity: 0 },

@@ -1,6 +1,12 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
-import { VolumeData, VolumeRenderingSettings, TransferFunction } from '../types/volume';
+import { 
+  VolumeData, 
+  VolumeRenderingSettings, 
+  TransferFunction,
+  ROIBoundingBox,
+  SuspiciousRegion
+} from '../types/volume';
 import { buildTransferFunctionTextureData } from '../utils/volumeUtils';
 
 import vertShader from '../shaders/raymarch.vert?raw';
@@ -13,6 +19,12 @@ interface VolumeViewerProps {
   className?: string;
   onPerformanceWarning?: (message: string) => void;
   onWebGLError?: (error: string) => void;
+  tomographMode?: boolean;
+  roiSelection?: ROIBoundingBox | null;
+  onROISelectionChange?: (roi: ROIBoundingBox | null) => void;
+  onROISelectionComplete?: (roi: ROIBoundingBox) => void;
+  slicePlanePosition?: number;
+  highlightRegion?: SuspiciousRegion | null;
 }
 
 const VolumeViewer: React.FC<VolumeViewerProps> = ({
@@ -21,7 +33,13 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
   transferFunction,
   className,
   onPerformanceWarning,
-  onWebGLError
+  onWebGLError,
+  tomographMode = false,
+  roiSelection,
+  onROISelectionChange,
+  onROISelectionComplete,
+  slicePlanePosition = 0.5,
+  highlightRegion = null
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -29,8 +47,12 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const volumeMeshRef = useRef<THREE.Mesh | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
+  const roiBoxRef = useRef<THREE.Mesh | null>(null);
+  const slicePlaneMeshRef = useRef<THREE.Mesh | null>(null);
+  const highlightBoxRef = useRef<THREE.Mesh | null>(null);
   const animationIdRef = useRef<number>(0);
   const isDraggingRef = useRef(false);
+  const isROISelectingRef = useRef(false);
   const previousMouseRef = useRef({ x: 0, y: 0 });
   const rotationRef = useRef({ x: 0.5, y: 0.5 });
   const zoomRef = useRef(2.5);
@@ -38,12 +60,14 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
   const zeffTextureRef = useRef<THREE.Texture | null>(null);
   const tfDensityTextureRef = useRef<THREE.DataTexture | null>(null);
   const tfZeffTextureRef = useRef<THREE.DataTexture | null>(null);
+  const roiStartRef = useRef<[number, number, number]>([0, 0, 0]);
 
   const frameTimeRef = useRef<number[]>([]);
   const lastQualityReductionRef = useRef<number>(0);
   const webglContextLostRef = useRef(false);
 
   const [isContextLost, setIsContextLost] = useState(false);
+  const [isROISelecting, setIsROISelecting] = useState(false);
 
   const getCameraDistance = useCallback(() => {
     if (!cameraRef.current) return 3.0;
@@ -196,6 +220,145 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     texture.wrapT = THREE.ClampToEdgeWrapping;
     texture.needsUpdate = true;
     return texture;
+  }, []);
+
+  const raycastToBox = useCallback((clientX: number, clientY: number): THREE.Vector3 | null => {
+    if (!containerRef.current || !cameraRef.current || !volumeMeshRef.current) return null;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), cameraRef.current);
+
+    const intersects = raycaster.intersectObject(volumeMeshRef.current);
+    if (intersects.length > 0) {
+      const point = intersects[0].point;
+      const localPoint = point.clone();
+      volumeMeshRef.current.worldToLocal(localPoint);
+      return localPoint.add(new THREE.Vector3(0.5, 0.5, 0.5));
+    }
+
+    return null;
+  }, []);
+
+  const updateROIBox = useCallback((min: [number, number, number], max: [number, number, number]) => {
+    if (!sceneRef.current || !volumeMeshRef.current) return;
+
+    if (!roiBoxRef.current) {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const edges = new THREE.EdgesGeometry(geometry);
+      const material = new THREE.LineBasicMaterial({ 
+        color: 0x00ff88, 
+        linewidth: 2,
+        transparent: true,
+        opacity: 0.8
+      });
+      const edgeLines = new THREE.LineSegments(edges, material);
+      
+      const faceMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ff88,
+        transparent: true,
+        opacity: 0.1,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, faceMaterial);
+      mesh.add(edgeLines);
+      
+      roiBoxRef.current = mesh;
+      volumeMeshRef.current.add(mesh);
+    }
+
+    const size: [number, number, number] = [
+      max[0] - min[0],
+      max[1] - min[1],
+      max[2] - min[2]
+    ];
+    const center: [number, number, number] = [
+      min[0] + size[0] / 2 - 0.5,
+      min[1] + size[1] / 2 - 0.5,
+      min[2] + size[2] / 2 - 0.5
+    ];
+
+    roiBoxRef.current.scale.set(size[0], size[1], size[2]);
+    roiBoxRef.current.position.set(center[0], center[1], center[2]);
+    roiBoxRef.current.visible = true;
+  }, []);
+
+  const updateSlicePlane = useCallback((position: number) => {
+    if (!sceneRef.current || !volumeMeshRef.current) return;
+
+    if (!slicePlaneMeshRef.current) {
+      const geometry = new THREE.PlaneGeometry(1.1, 1.1);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0x66aaff,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      
+      const edgeGeometry = new THREE.EdgesGeometry(geometry);
+      const edgeMaterial = new THREE.LineBasicMaterial({ 
+        color: 0x66aaff,
+        transparent: true,
+        opacity: 0.8
+      });
+      const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+      mesh.add(edges);
+      
+      slicePlaneMeshRef.current = mesh;
+      volumeMeshRef.current.add(mesh);
+    }
+
+    const zPos = position - 0.5;
+    slicePlaneMeshRef.current.position.set(0, 0, zPos);
+    slicePlaneMeshRef.current.rotation.set(0, 0, 0);
+    slicePlaneMeshRef.current.visible = true;
+  }, []);
+
+  const updateHighlightBox = useCallback((region: SuspiciousRegion | null) => {
+    if (!sceneRef.current || !volumeMeshRef.current) return;
+
+    if (!highlightBoxRef.current) {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const edges = new THREE.EdgesGeometry(geometry);
+      const material = new THREE.LineBasicMaterial({ 
+        color: 0xff4400, 
+        linewidth: 3,
+        transparent: true,
+        opacity: 0.9
+      });
+      const edgeLines = new THREE.LineSegments(edges, material);
+      
+      const faceMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff4400,
+        transparent: true,
+        opacity: 0.15,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, faceMaterial);
+      mesh.add(edgeLines);
+      
+      highlightBoxRef.current = mesh;
+      volumeMeshRef.current.add(mesh);
+    }
+
+    if (!region) {
+      highlightBoxRef.current.visible = false;
+      return;
+    }
+
+    const center: [number, number, number] = [
+      region.center[0] - 0.5,
+      region.center[1] - 0.5,
+      region.center[2] - 0.5
+    ];
+
+    highlightBoxRef.current.scale.set(region.size[0], region.size[1], region.size[2]);
+    highlightBoxRef.current.position.set(center[0], center[1], center[2]);
+    highlightBoxRef.current.visible = true;
   }, []);
 
   const createVolumeMesh = useCallback(() => {
@@ -368,25 +531,69 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     const container = containerRef.current;
 
     const handleMouseDown = (e: MouseEvent) => {
-      isDraggingRef.current = true;
-      previousMouseRef.current = { x: e.clientX, y: e.clientY };
-      frameTimeRef.current = [];
+      if (e.button !== 0) return;
+      
+      if (tomographMode) {
+        const hitPoint = raycastToBox(e.clientX, e.clientY);
+        if (hitPoint) {
+          isROISelectingRef.current = true;
+          setIsROISelecting(true);
+          roiStartRef.current = [hitPoint.x, hitPoint.y, hitPoint.z];
+          frameTimeRef.current = [];
+        }
+      } else {
+        isDraggingRef.current = true;
+        previousMouseRef.current = { x: e.clientX, y: e.clientY };
+        frameTimeRef.current = [];
+      }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingRef.current) return;
+      if (isROISelectingRef.current && tomographMode) {
+        const hitPoint = raycastToBox(e.clientX, e.clientY);
+        if (hitPoint) {
+          const start = roiStartRef.current;
+          const end: [number, number, number] = [hitPoint.x, hitPoint.y, hitPoint.z];
+          
+          const min: [number, number, number] = [
+            Math.min(start[0], end[0]),
+            Math.min(start[1], end[1]),
+            Math.min(start[2], end[2])
+          ];
+          const max: [number, number, number] = [
+            Math.max(start[0], end[0]),
+            Math.max(start[1], end[1]),
+            Math.max(start[2], end[2])
+          ];
 
-      const deltaX = e.clientX - previousMouseRef.current.x;
-      const deltaY = e.clientY - previousMouseRef.current.y;
+          updateROIBox(min, max);
+          
+          if (onROISelectionChange) {
+            onROISelectionChange({ min, max });
+          }
+        }
+      } else if (isDraggingRef.current) {
+        const deltaX = e.clientX - previousMouseRef.current.x;
+        const deltaY = e.clientY - previousMouseRef.current.y;
 
-      rotationRef.current.y += deltaX * 0.005;
-      rotationRef.current.x += deltaY * 0.005;
-      rotationRef.current.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, rotationRef.current.x));
+        rotationRef.current.y += deltaX * 0.005;
+        rotationRef.current.x += deltaY * 0.005;
+        rotationRef.current.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, rotationRef.current.x));
 
-      previousMouseRef.current = { x: e.clientX, y: e.clientY };
+        previousMouseRef.current = { x: e.clientX, y: e.clientY };
+      }
     };
 
     const handleMouseUp = () => {
+      if (isROISelectingRef.current && tomographMode) {
+        isROISelectingRef.current = false;
+        setIsROISelecting(false);
+        
+        if (onROISelectionComplete && roiSelection) {
+          onROISelectionComplete(roiSelection);
+        }
+      }
+      
       isDraggingRef.current = false;
       frameTimeRef.current = [];
     };
@@ -415,7 +622,7 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
       window.removeEventListener('mouseup', handleMouseUp);
       container.removeEventListener('wheel', handleWheel);
     };
-  }, []);
+  }, [tomographMode, raycastToBox, updateROIBox, onROISelectionChange, onROISelectionComplete, roiSelection]);
 
   useEffect(() => {
     const updateUniforms = () => {
@@ -435,12 +642,64 @@ const VolumeViewer: React.FC<VolumeViewerProps> = ({
     return () => cancelAnimationFrame(id);
   }, []);
 
+  useEffect(() => {
+    if (roiSelection) {
+      updateROIBox(roiSelection.min, roiSelection.max);
+    } else if (roiBoxRef.current) {
+      roiBoxRef.current.visible = false;
+    }
+  }, [roiSelection, updateROIBox]);
+
+  useEffect(() => {
+    if (tomographMode) {
+      updateSlicePlane(slicePlanePosition);
+    } else if (slicePlaneMeshRef.current) {
+      slicePlaneMeshRef.current.visible = false;
+    }
+  }, [slicePlanePosition, tomographMode, updateSlicePlane]);
+
+  useEffect(() => {
+    updateHighlightBox(highlightRegion);
+  }, [highlightRegion, updateHighlightBox]);
+
+  useEffect(() => {
+    if (!tomographMode) {
+      isROISelectingRef.current = false;
+      setIsROISelecting(false);
+    }
+  }, [tomographMode]);
+
   return (
     <div
       ref={containerRef}
       className={className}
-      style={{ width: '100%', height: '100%', position: 'relative', cursor: 'grab' }}
+      style={{ 
+        width: '100%', 
+        height: '100%', 
+        position: 'relative', 
+        cursor: tomographMode ? (isROISelecting ? 'crosshair' : 'crosshair') : 'grab'
+      }}
     >
+      {tomographMode && (
+        <div style={{
+          position: 'absolute',
+          top: '12px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(0, 255, 120, 0.15)',
+          border: '1px solid rgba(0, 255, 120, 0.4)',
+          padding: '6px 14px',
+          borderRadius: '4px',
+          color: '#66ff99',
+          fontSize: '12px',
+          fontWeight: 600,
+          zIndex: 100,
+          pointerEvents: 'none'
+        }}>
+          🎯 断层扫描模式 - 拖动鼠标选择 ROI 区域
+        </div>
+      )}
+      
       {isContextLost && (
         <div style={{
           position: 'absolute',
